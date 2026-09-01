@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI SIEM Threat Intelligence Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans p-6">
+    <header class="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
+        <div>
+            <h1 class="text-2xl font-bold text-blue-500">🛡️ Local AI-Powered SIEM</h1>
+            <p class="text-xs text-slate-400">Offline Triage Engine & Automated SOAR Isolation</p>
+        </div>
+        <span class="px-3 py-1 text-xs font-semibold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            ● Local Ollama AI Active
+        </span>
+    </header>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+        <h2 class="text-md font-semibold mb-4 text-slate-200">Real-Time Incident Stream</h2>
+        <table class="w-full text-left text-sm text-slate-400">
+            <thead class="bg-slate-950 text-xs text-slate-300 uppercase">
+                <tr>
+                    <th class="p-3">Source IP</th>
+                    <th class="p-3">Threat Type</th>
+                    <th class="p-3">AI Confidence</th>
+                    <th class="p-3">Triage Explanation</th>
+                    <th class="p-3">Enforcement</th>
+                </tr>
+            </thead>
+            <tbody id="alert-table"></tbody>
+        </table>
+    </div>
+
+    <script>
+        const ws = new WebSocket(`ws://${location.host}/ws/alerts`);
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            if (data.is_threat) {
+                const row = document.createElement("tr");
+                row.className = "border-b border-slate-800 hover:bg-slate-800/50 transition";
+                row.innerHTML = `
+                    <td class="p-3 font-mono text-slate-200">${data.ip}</td>
+                    <td class="p-3"><span class="px-2 py-0.5 text-xs rounded bg-red-500/10 text-red-400 border border-red-500/20">${data.threat_type}</span></td>
+                    <td class="p-3 font-bold text-red-400">${data.confidence}%</td>
+                    <td class="p-3 text-xs text-slate-300">${data.explanation}</td>
+                    <td class="p-3"><span class="px-2 py-0.5 text-xs rounded bg-amber-500/10 text-amber-400">${data.action}</span></td>
+                `;
+                document.getElementById("alert-table").prepend(row);
+            }
+        };
+    </script>
+</body>
+</html>
