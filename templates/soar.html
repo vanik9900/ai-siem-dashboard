@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>⚙️ SOAR Isolation Controls</h1>
+<div class="card">
+    <h3>Active Host Blocks (iptables Firewall Rules)</h3>
+    <ul>
+        {% for ip in blocked_ips %}
+            <li style="color:#ef4444; margin-bottom: 8px;"><strong>{{ ip }}</strong> — Automated Quarantine via High-Severity SQLi Trigger</li>
+        {% else %}
+            <li>No host isolation rules actively enforced.</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endblock %}

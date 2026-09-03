@@ -1,0 +1,40 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>🔴 Real-Time Incident Stream</h1>
+<div class="card">
+    <table>
+        <thead>
+            <tr><th>TIME</th><th>SOURCE IP</th><th>THREAT TYPE</th><th>CONFIDENCE</th><th>EXPLANATION</th><th>STATUS</th></tr>
+        </thead>
+        <tbody id="stream">
+            {% for e in events %}
+            <tr>
+                <td>{{ e.timestamp }}</td>
+                <td><strong>{{ e.source_ip }}</strong></td>
+                <td>{{ e.threat_type }}</td>
+                <td>{{ e.confidence }}</td>
+                <td>{{ e.explanation }}</td>
+                <td><span class="badge-red">{{ e.enforcement }}</span></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+    const socket = io();
+    socket.on('new_incident', (data) => {
+        const stream = document.getElementById('stream');
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${data.timestamp}</td>
+            <td><strong>${data.source_ip}</strong></td>
+            <td style="color:#f87171">${data.threat_type}</td>
+            <td>${data.confidence}</td>
+            <td>${data.explanation}</td>
+            <td><span class="badge-red">${data.enforcement}</span></td>
+        `;
+        stream.insertBefore(row, stream.firstChild);
+    });
+</script>
+{% endblock %}

@@ -1,69 +1,57 @@
 import os
 import re
+import json
 import time
 import requests
 import eventlet
-from flask import Flask, render_template
+from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
 
-# Initialize eventlet for asynchronous background tasks
 eventlet.monkey_patch()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'siem_secret_key'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
-# Path to the log file on Ubuntu
 LOG_FILE = "/var/log/apache2/access.log"
-
-# Ollama API Endpoint (Local AI)
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3"  # Replace with your local model name if different (e.g., mistral, llama2)
+OLLAMA_MODEL = "llama3"
 
-# Flexible Regex matching both standard Apache logs and Syslog-wrapped headers
+# In-Memory SIEM Event Store
+INCIDENT_LOGS = []
+BLOCKED_IPS = set()
+
 LOG_REGEX = re.compile(
-    r'(?:.*apache_access:\s*)?(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+-\s+-\s+\[(?P<date>[^\]]+)\]\s+"(?P<method>[A-Z]+)\s+(?P<path>\S+)\s+HTTP/[0-9.]+"\s+(?P<status>\d+)'
+    r'(?:.*(?:apache_access|apache|syslog):\s*)?(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+-\s+-\s+\[(?P<date>[^\]]+)\]\s+"(?P<method>[A-Z]+)\s+(?P<path>\S+)\s+HTTP/[0-9.]+"\s+(?P<status>\d+)'
 )
 
 def query_ollama_ai(log_line):
-    """Sends log line to local Ollama AI to determine threat classification."""
-    prompt = f"""
-Analyze the following Web Server Access Log line for security threats (e.g., SQL Injection, XSS, Command Injection, Directory Traversal, or Normal Traffic).
-
-Log Line: {log_line}
-
-Respond ONLY in JSON format with no additional text:
-{{
-    "threat_type": "<SQL Injection | XSS | Command Injection | Path Traversal | Normal>",
-    "confidence": "<High | Medium | Low | None>",
-    "explanation": "<Short 1-sentence triage summary>",
-    "action": "<Isolate IP | Monitor | Ignore>"
-}}
-"""
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
-            timeout=5
-        )
-        if response.status_code == 200:
-            result = response.json().get('response', '')
-            # Extract JSON from model output
-            import json
-            match = re.search(r'\{.*\}', result, re.DOTALL)
-            if match:
-                return json.loads(match.group(0))
-    except Exception as e:
-        print(f"[!] Ollama API Error: {e}")
-
-    # Fallback basic rule-based detection if Ollama fails or times out
-    if "UNION" in log_line.upper() or "SELECT" in log_line.upper() or "'" in log_line:
+    """Hybrid Signature Engine + AI Fallback"""
+    if any(pattern in log_line.upper() for pattern in ["UNION", "SELECT", "PASSWORD", "' OR ", "DROP"]):
         return {
             "threat_type": "SQL Injection",
             "confidence": "High",
-            "explanation": "Detected SQL keywords/syntax in query parameters.",
+            "explanation": "Malicious SQL query parameters identified.",
             "action": "Isolate IP"
         }
+    elif "<script>" in log_line.lower() or "javascript:" in log_line.lower():
+        return {
+            "threat_type": "Cross-Site Scripting (XSS)",
+            "confidence": "High",
+            "explanation": "Script payload embedded in URL path.",
+            "action": "Isolate IP"
+        }
+
+    try:
+        prompt = f"Analyze log for security threats: {log_line}\nRespond ONLY in valid JSON: {{\"threat_type\":\"...\", \"confidence\":\"...\", \"explanation\":\"...\", \"action\":\"...\"}}"
+        resp = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}, timeout=1.5)
+        if resp.status_code == 200:
+            match = re.search(r'\{.*\}', resp.json().get('response', ''), re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+    except Exception:
+        pass
+
     return {
         "threat_type": "Normal Traffic",
         "confidence": "None",
@@ -72,67 +60,72 @@ Respond ONLY in JSON format with no additional text:
     }
 
 def enforce_soar_isolation(ip_address):
-    """Automated SOAR action: Blocks hostile IP using iptables."""
+    """Applies system iptables block rule."""
     try:
-        print(f"[SOAR ENFORCEMENT] Blocking malicious IP: {ip_address}")
-        # Command executes iptables drop rule
         os.system(f"sudo iptables -A INPUT -s {ip_address} -j DROP")
+        BLOCKED_IPS.add(ip_address)
         return f"BLOCKED ({ip_address})"
     except Exception as e:
-        return f"Failed: {e}"
+        return f"Error: {e}"
 
 def tail_access_log():
-    """Background task reading /var/log/apache2/access.log in real-time."""
+    """Background Log Reader Stream"""
     if not os.path.exists(LOG_FILE):
         open(LOG_FILE, 'a').close()
 
     with open(LOG_FILE, "r") as f:
-        # Move pointer to end of file on startup
         f.seek(0, os.SEEK_END)
-        
         while True:
             line = f.readline()
             if not line:
-                socketio.sleep(0.2)
+                socketio.sleep(0.1)
                 continue
 
             match = LOG_REGEX.search(line)
             if match:
-                log_data = match.groupdict()
-                src_ip = log_data['ip']
-                req_path = log_data['path']
+                data = match.groupdict()
+                src_ip = data['ip']
+                triage = query_ollama_ai(line)
 
-                # Analyze line via Local AI Engine
-                ai_triage = query_ollama_ai(line)
+                enforcement = "Monitored"
+                if triage.get("action") == "Isolate IP":
+                    enforcement = enforce_soar_isolation(src_ip)
 
-                # SOAR Enforcement if threat detected
-                enforcement_status = "None"
-                if ai_triage.get("action") == "Isolate IP":
-                    enforcement_status = enforce_soar_isolation(src_ip)
-
-                # Construct event payload for Web UI
-                incident_event = {
+                event = {
+                    "timestamp": time.strftime("%H:%M:%S"),
                     "source_ip": src_ip,
-                    "threat_type": ai_triage.get("threat_type", "Unknown"),
-                    "confidence": ai_triage.get("confidence", "Low"),
-                    "explanation": ai_triage.get("explanation", "No analysis provided."),
-                    "enforcement": enforcement_status,
-                    "raw_path": req_path
+                    "threat_type": triage.get("threat_type", "Unknown"),
+                    "confidence": triage.get("confidence", "Low"),
+                    "explanation": triage.get("explanation", "Event logged."),
+                    "enforcement": enforcement,
+                    "path": data['path'],
+                    "raw": line.strip()
                 }
 
-                # Push event live to Web SIEM UI
-                socketio.emit('new_incident', incident_event)
+                INCIDENT_LOGS.append(event)
+                socketio.emit('new_incident', event)
+                socketio.sleep(0)
 
+# Page Routes
 @app.route('/')
-def index():
-    return render_template('index.html')
+def live_triage():
+    return render_template('triage.html', events=INCIDENT_LOGS[::-1])
 
-@socketio.on('connect')
-def handle_connect():
-    print("[+] Client Dashboard Connected")
+@app.route('/executive')
+def executive_dashboard():
+    total = len(INCIDENT_LOGS)
+    threats = sum(1 for e in INCIDENT_LOGS if e['threat_type'] != "Normal Traffic")
+    return render_template('executive.html', total=total, threats=threats, blocked=len(BLOCKED_IPS))
+
+@app.route('/hunting')
+def threat_hunting():
+    return render_template('hunting.html', events=INCIDENT_LOGS)
+
+@app.route('/soar')
+def soar_dashboard():
+    return render_template('soar.html', blocked_ips=list(BLOCKED_IPS))
 
 if __name__ == '__main__':
-    # Start background log parser thread
     socketio.start_background_task(target=tail_access_log)
-    print("[*] Starting Local AI SIEM Server on http://0.0.0.0:8000...")
+    print("[*] Enterprise SIEM Running at http://0.0.0.0:8000")
     socketio.run(app, host='0.0.0.0', port=8000, debug=False)

@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>🔍 Forensic Log Hunting Console</h1>
+<div class="card">
+    <input type="text" id="searchInput" onkeyup="filterLogs()" placeholder="Search by IP, payload, or path..." style="width: 98%; padding: 10px; background: #0f172a; color: white; border: 1px solid #334155;">
+</div>
+
+<div class="card">
+    <table id="logsTable">
+        <thead>
+            <tr><th>TIMESTAMP</th><th>IP</th><th>REQUEST PATH</th><th>RAW LOG PAYLOAD</th></tr>
+        </thead>
+        <tbody>
+            {% for e in events %}
+            <tr>
+                <td>{{ e.timestamp }}</td>
+                <td>{{ e.source_ip }}</td>
+                <td><code>{{ e.path }}</code></td>
+                <td style="font-size: 11px; color: #94a3b8;">{{ e.raw }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+function filterLogs() {
+    let input = document.getElementById("searchInput").value.toLowerCase();
+    let rows = document.querySelectorAll("#logsTable tbody tr");
+    rows.forEach(row => {
+        row.style.display = row.innerText.toLowerCase().includes(input) ? "" : "none";
+    });
+}
+</script>
+{% endblock %}

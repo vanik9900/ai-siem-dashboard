@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>📊 Security Posture & Metrics</h1>
+<div style="display: flex; gap: 20px;">
+    <div class="card" style="flex: 1;"><h3>Total Log Velocity</h3><h2>{{ total }} Events</h2></div>
+    <div class="card" style="flex: 1;"><h3>Identified Threats</h3><h2 style="color:#f87171">{{ threats }} Alerts</h2></div>
+    <div class="card" style="flex: 1;"><h3>Active SOAR Blocks</h3><h2 style="color:#38bdf8">{{ blocked }} Hosts</h2></div>
+</div>
+
+<div class="card">
+    <canvas id="threatChart" height="100"></canvas>
+</div>
+
+<script>
+    const ctx = document.getElementById('threatChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['SQL Injection', 'XSS', 'Directory Traversal', 'Normal'],
+            datasets: [{
+                label: 'Threat Count',
+                data: [{{ threats }}, 0, 0, {{ total - threats }}],
+                backgroundColor: ['#ef4444', '#f59e0b', '#10b981', '#3b82f6']
+            }]
+        }
+    });
+</script>
+{% endblock %}
